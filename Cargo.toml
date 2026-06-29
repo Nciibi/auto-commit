@@ -1,0 +1,38 @@
+[package]
+name = "autocommit"
+version = "0.1.0"
+edition = "2021"
+description = "Automatically create Git commits whenever a coding session finishes"
+license = "MIT"
+
+[dependencies]
+# File system notifications
+notify = { version = "7", features = ["macos_fsevent"] }
+
+# Git ignore rule matching
+ignore = "0.4"
+
+# Git repository operations
+git2 = "0.19"
+
+# Semantic versioning
+semver = "1"
+
+# Error handling
+anyhow = "1"
+thiserror = "2"
+
+# CLI argument parsing
+clap = { version = "4", features = ["derive"] }
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# Terminal colors
+colored = "2"
+
+# Ctrl+C signal handling
+ctrlc = "3"
+
+# Cross-platform path handling
+pathdiff = "0.2"
