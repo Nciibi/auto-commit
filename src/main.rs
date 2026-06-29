@@ -35,7 +35,6 @@ use ignore::IgnoreFilter;
 
 /// Exit codes used by the application.
 mod exit_code {
-    pub const SUCCESS: i32 = 0;
     pub const ERROR_NOT_IN_REPO: i32 = 1;
     pub const ERROR_GENERIC: i32 = 2;
 }

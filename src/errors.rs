@@ -12,17 +12,9 @@ pub enum AutoCommitError {
     #[error("Not inside a Git repository")]
     NotInRepository,
 
-    /// Git is not installed or the `git2` library cannot find it.
-    #[error("Git is not available: {0}")]
-    GitNotAvailable(#[source] anyhow::Error),
-
     /// Failed to open the Git repository.
     #[error("Failed to open Git repository: {0}")]
     RepoOpen(#[source] anyhow::Error),
-
-    /// Unable to get repository status (e.g., workdir, head).
-    #[error("Failed to read repository state: {0}")]
-    RepoState(#[source] anyhow::Error),
 
     /// Detached HEAD state — cannot determine branch.
     #[error("Repository is in detached HEAD state")]
@@ -47,10 +39,6 @@ pub enum AutoCommitError {
     /// Merge conflict detected.
     #[error("Merge conflict detected — resolve conflicts before continuing")]
     MergeConflict,
-
-    /// Failed to parse a semantic version from a commit message.
-    #[error("Invalid version format: {0}")]
-    InvalidVersion(#[source] anyhow::Error),
 
     /// Failed to initialise the file watcher.
     #[error("Failed to start file watcher: {0}")]

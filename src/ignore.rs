@@ -1,12 +1,14 @@
 //! Git-ignore rule loading using the `ignore` crate.
 //!
-//! Builds a `WalkBuilder`-compatible filter that respects:
+//! Builds a compiled override matcher that respects:
 //! * `.gitignore` files at every level
 //! * `.git/info/exclude`
 //! * The user-global gitignore (`core.excludesFile`)
 //!
-//! The `std::path::Path`-returning API is preferred because the file
-//! watcher emits paths directly.
+//! The `ignore` crate's `WalkBuilder` handles all of these
+//! automatically when building a parallel walker.  For single-path
+//! queries (as used by the file watcher) we compile an
+//! `Override` matcher anchored at the repository root.
 
 use std::path::{Path, PathBuf};
 use ignore::overrides::OverrideBuilder;
@@ -21,16 +23,14 @@ pub struct IgnoreFilter {
     root: PathBuf,
     /// Compiled override matcher.
     overrides: ignore::overrides::Override,
-    /// The underlying `WalkBuilder`-style filter for directory-level rules.
-    /// Kept around so we can re-check on the fly if needed.
-    git_global: Option<PathBuf>,
 }
 
 impl IgnoreFilter {
     /// Build an `IgnoreFilter` for the repository at `repo_root`.
     ///
-    /// Scans for `.gitignore` files, loads the global exclude, and
-    /// compiles everything into an efficient matcher.
+    /// Always ignores the `.git` directory.  `.gitignore` files and
+    /// global excludes are discovered by the `ignore` crate's default
+    /// mechanisms.
     pub fn new(repo_root: &Path) -> Result<Self> {
         let root = repo_root.to_path_buf();
 
@@ -46,10 +46,7 @@ impl IgnoreFilter {
             .build()
             .map_err(|e| AutoCommitError::Other(e.into()))?;
 
-        // Determine the global excludes file.
-        let git_global = find_global_excludes();
-
-        Ok(Self { root, overrides, git_global })
+        Ok(Self { root, overrides })
     }
 
     /// Returns `true` if `path` should be **ignored** (i.e., not
@@ -70,42 +67,6 @@ impl IgnoreFilter {
 
         // Use the override matcher.
         self.overrides.matched(rel, rel.is_dir()).is_ignore()
-    }
-}
-
-/// Locate the user-global gitignore file.
-///
-/// Checks `core.excludesFile` via git config, then falls back to
-/// `~/.config/git/ignore` (Linux/macOS) or
-/// `%USERPROFILE%\.config\git\ignore` (Windows).
-fn find_global_excludes() -> Option<PathBuf> {
-    // Try `git config --global core.excludesFile`.  We do shell out here
-    // because `git2` doesn't expose global config easily and this is a
-    // one-off during startup.
-    let output = std::process::Command::new("git")
-        .args(["config", "--global", "--get", "core.excludesFile"])
-        .output()
-        .ok()?;
-
-    if output.status.success() {
-        let path_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        if !path_str.is_empty() {
-            let p = PathBuf::from(path_str);
-            if p.exists() {
-                return Some(p);
-            }
-        }
-    }
-
-    // Fallback: XDG-style location.
-    let home = std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .ok()?;
-    let fallback = PathBuf::from(home).join(".config").join("git").join("ignore");
-    if fallback.exists() {
-        Some(fallback)
-    } else {
-        None
     }
 }
 
