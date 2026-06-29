@@ -1,2 +1,16 @@
+﻿# Rust build artifacts
 target/
-node_modules/
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# AutoCommit config
+autocommit.toml
