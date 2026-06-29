@@ -28,10 +28,6 @@ mod ignore;
 mod version;
 mod watcher;
 
-use std::path::PathBuf;
-use std::sync::mpsc;
-use std::time::Duration;
-use anyhow::Context;
 use colored::*;
 use debounce::DebounceEvent;
 use git::GitRepo;
@@ -82,10 +78,8 @@ fn main() {
                 "[warn]".yellow().bold(),
                 e
             );
-            // Non-fatal — fall back to watching everything (except .git).
-            IgnoreFilter::new(&repo.root).unwrap_or_else(|_| {
-                panic!("cannot create basic ignore filter")
-            })
+            // Non-fatal — fall back to basic filter (still ignores .git).
+            IgnoreFilter::new(&repo.root).unwrap()
         }
     };
 
@@ -103,8 +97,8 @@ fn main() {
     println!("{} {}", "Branch:".cyan().bold(), branch);
 
     // Channels.
-    let (event_tx, event_rx) = mpsc::channel::<DebounceEvent>();
-    let (commit_tx, commit_rx) = mpsc::channel::<DebounceEvent>();
+    let (event_tx, event_rx) = std::sync::mpsc::channel::<DebounceEvent>();
+    let (commit_tx, commit_rx) = std::sync::mpsc::channel::<DebounceEvent>();
 
     // ------------------------------------------------------------------
     // Start the file watcher.
@@ -117,6 +111,8 @@ fn main() {
         }
     };
     // Keep watcher alive for the process lifetime.
+    // We forget the handle so it's never dropped (keeping the watcher
+    // thread alive). On process exit, the OS cleans up.
     std::mem::forget(watcher_handle);
 
     println!(
@@ -140,7 +136,6 @@ fn main() {
     // Spawn the debounce loop in a background thread.
     // ------------------------------------------------------------------
     let debounce_timeout = config::debounce_timeout(args.timeout);
-    let event_tx_for_debounce = event_tx.clone();
     std::thread::spawn(move || {
         debounce::debounce_loop(debounce_timeout, event_rx, commit_tx);
     });
@@ -149,14 +144,12 @@ fn main() {
     // Main loop — wait for commit signals and process them.
     // ------------------------------------------------------------------
     if args.verbose {
-        println!("{}", "[verbose] Debounce timeout: {:?}".dimmed(), debounce_timeout);
+        println!("{} Debounce timeout: {:?}", "[verbose]".dimmed(), debounce_timeout);
     }
 
-    // We'll re-open the repo each time to avoid stale state issues; for
-    // performance the root path is captured once.
+    // Capture repo root for re-opening in each cycle.
     let repo_root = repo.root.clone();
 
-    // Wait for either a shutdown signal or the first event.
     'main: loop {
         // Check for immediate shutdown.
         if shutdown_rx.try_recv().is_ok() {
@@ -179,16 +172,17 @@ fn main() {
                 };
 
                 // Check if there's anything to commit.
-                if repo.is_clean().unwrap_or(true) {
-                    if args.verbose {
-                        println!("{} No changes to commit.", "[verbose]".dimmed());
+                match repo.is_clean() {
+                    Ok(true) | Err(_) => {
+                        if args.verbose {
+                            println!("{} No changes to commit.", "[verbose]".dimmed());
+                        }
+                        continue;
                     }
-                    continue;
+                    Ok(false) => {} // Has changes — proceed.
                 }
 
-                let msg = format!("{}\n\n{}", "Creating commit...".yellow().bold(), "".clear());
-                print!("\r{}", msg);
-                println!();
+                println!("{}", "Creating commit...".yellow().bold());
 
                 // Determine the next version.
                 let version_str = match repo.latest_version() {
