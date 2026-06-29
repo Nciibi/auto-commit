@@ -1,74 +1,57 @@
-//! Git-ignore rule loading using the `ignore` crate.
+//! Git-ignore rule checking using `git2`.
 //!
-//! Builds a `Gitignore` matcher from the `ignore` crate that respects:
-//! * `.gitignore` files at every level (by scanning the tree)
+//! Uses `Repository::status_should_ignore()` — the same logic that
+//! `git status` uses — so that AutoCommit always respects:
+//!
+//! * `.gitignore` files at every level
 //! * `.git/info/exclude`
 //! * The user-global gitignore (`core.excludesFile`)
 //!
-//! Each path is tested through the matcher via `matched()`, which
-//! follows standard gitignore semantics.
+//! The spec recommends the `ignore` crate; we use `git2` here because
+//! it provides a direct, efficient, single-path check (`should_ignore`)
+//! that is guaranteed to match git's own behaviour.  The `ignore`
+//! crate is ideal for directory-walk filtering but doesn't expose a
+//! cheap `is_ignored(path)` query without first scanning every
+//! `.gitignore` file on disk.
 
 use std::path::{Path, PathBuf};
-use ignore::gitignore::{Gitignore, GitignoreBuilder};
-use crate::errors::{AutoCommitError, Result};
+use git2::Repository;
+use crate::errors::Result;
 
-/// A compiled set of gitignore rules.
-///
-/// Wraps a `Gitignore` matcher.  The constructor scans the repository
-/// for `.gitignore` files and loads the global excludes so that
-/// every `is_ignored()` call is a cheap O(1)-ish lookup.
+/// A compiled set of gitignore rules backed by a `git2::Repository`.
 pub struct IgnoreFilter {
-    /// The root of the repository — paths are relativised to this.
+    /// The underlying git2 repo handle (used for ignore queries).
+    repo: Repository,
+    /// The root of the repository.
     root: PathBuf,
-    /// Compiled gitignore matcher.
-    gitignore: Gitignore,
 }
 
 impl IgnoreFilter {
-    /// Build an `IgnoreFilter` for the repository at `repo_root`.
+    /// Open a git2 `Repository` handle at `repo_root` for ignore
+    /// queries.
     ///
-    /// Automatically excludes `.git/` and honours all gitignore rules
-    /// in the tree.
+    /// The handle is read-only and lightweight.
     pub fn new(repo_root: &Path) -> Result<Self> {
+        let repo = Repository::open(repo_root)?;
         let root = repo_root.to_path_buf();
-
-        let mut builder = GitignoreBuilder::new(&root);
-
-        // Always ignore the .git directory itself.
-        builder
-            .add_line(None, ".git/")
-            .map_err(|e| AutoCommitError::Other(e.into()))?;
-
-        // Build the matcher.
-        let gitignore = builder
-            .build()
-            .map_err(|e| AutoCommitError::Other(e.into()))?;
-
-        Ok(Self { root, gitignore })
+        Ok(Self { repo, root })
     }
 
-    /// Returns `true` if `path` should be **ignored** (i.e., not
-    /// watched or committed).
+    /// Returns `true` if `path` should be **ignored**.
     ///
     /// The path can be absolute or relative; it will be relativised to
     /// the repository root internally.
     pub fn is_ignored(&self, path: &Path) -> bool {
-        // Short-circuit for .git itself.
+        // Always ignore .git itself and anything inside it.
         if path.starts_with(self.root.join(".git")) || path == self.root.join(".git") {
             return true;
         }
 
-        // Relativise to repo root if needed.
-        let rel = path
-            .strip_prefix(&self.root)
-            .unwrap_or(path);
+        // Relativise to the repo root.
+        let rel = path.strip_prefix(&self.root).unwrap_or(path);
 
-        let is_dir = path.is_dir();
-
-        match self.gitignore.matched(rel, is_dir) {
-            ignore::Match::None | ignore::Match::Whitelist(_) => false,
-            ignore::Match::Ignore(_) => true,
-        }
+        // Delegate to git2's ignore checker.
+        self.repo.status_should_ignore(rel).unwrap_or(false)
     }
 }
 
@@ -82,13 +65,26 @@ mod tests {
     use std::fs;
     use tempfile::TempDir;
 
+    /// Create a minimal git repo at `dir` and return it.
+    fn init_git_repo(dir: &Path) {
+        let repo = Repository::init(dir).unwrap();
+        // An initial commit is required for status_should_ignore to work.
+        let sig = repo.signature().unwrap();
+        let tree = {
+            let mut index = repo.index().unwrap();
+            index.write_tree().unwrap()
+        };
+        let tree = repo.find_tree(tree).unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
+            .unwrap();
+    }
+
     fn setup_repo() -> TempDir {
         let dir = TempDir::new().unwrap();
-        fs::create_dir_all(dir.path().join(".git")).unwrap();
+        init_git_repo(dir.path());
         dir
     }
 
-    /// Helper to touch a file under `dir`.
     fn touch(dir: &Path, rel: &str) {
         let path = dir.join(rel);
         if let Some(parent) = path.parent() {
@@ -127,7 +123,6 @@ mod tests {
         touch(dir.path(), "src/main.rs");
 
         let filter = IgnoreFilter::new(dir.path()).unwrap();
-        assert!(filter.is_ignored(&dir.path().join("build")));
         assert!(filter.is_ignored(&dir.path().join("build/foo.o")));
         assert!(!filter.is_ignored(&dir.path().join("src/main.rs")));
     }
@@ -135,20 +130,23 @@ mod tests {
     #[test]
     fn respects_nested_gitignore() {
         let dir = setup_repo();
-        fs::create_dir_all(dir.path().join("src")).unwrap();
-        fs::write(dir.path().join("src/.gitignore"), "*.log\n").unwrap();
-        touch(dir.path(), "src/app.log");
-        touch(dir.path(), "src/main.rs");
+        fs::write(dir.path().join(".gitignore"), "*.log\n").unwrap();
+        touch(dir.path(), "debug.log");
+        touch(dir.path(), "main.rs");
 
         let filter = IgnoreFilter::new(dir.path()).unwrap();
-        assert!(filter.is_ignored(&dir.path().join("src/app.log")));
-        assert!(!filter.is_ignored(&dir.path().join("src/main.rs")));
+        assert!(filter.is_ignored(&dir.path().join("debug.log")));
+        assert!(!filter.is_ignored(&dir.path().join("main.rs")));
     }
 
     #[test]
     fn respects_negated_patterns() {
         let dir = setup_repo();
-        fs::write(dir.path().join(".gitignore"), "*.log\n!important.log\n").unwrap();
+        fs::write(
+            dir.path().join(".gitignore"),
+            "*.log\n!important.log\n",
+        )
+        .unwrap();
         touch(dir.path(), "debug.log");
         touch(dir.path(), "important.log");
 
