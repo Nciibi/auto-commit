@@ -4,6 +4,11 @@ version = "0.1.0"
 edition = "2021"
 description = "Automatically create Git commits whenever a coding session finishes"
 license = "MIT"
+readme = "README.md"
+homepage = "https://github.com/Nciibi/auto-commit"
+repository = "https://github.com/Nciibi/auto-commit"
+keywords = ["git", "automation", "commit", "versioning", "cli"]
+categories = ["command-line-utilities", "development-tools::git"]
 
 [dependencies]
 # File system notifications
