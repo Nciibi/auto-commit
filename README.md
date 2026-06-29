@@ -177,10 +177,10 @@ Watching...
 1. **Watch** — `notify` crate delivers filesystem events in real-time
 2. **Filter** — each path is checked against gitignore rules; ignored paths are discarded
 3. **Debounce** — the timer resets on every new event, so rapid saves don't trigger commits
-4. **Stage** — on timeout expiry, `git add -A` is run via `git2`
+4. **Stage** — on timeout expiry, all changes are staged via `git add -A`
 5. **Version** — the latest `vX.Y.Z` is parsed from commit history; PATCH is incremented
 6. **Commit** — a commit is created with the new version as the message
-7. **Push** — the commit is pushed to the tracking remote (if one exists)
+7. **Push** — the commit is pushed to the tracking remote via `git push` (your system's Git credential helpers handle auth)
 8. **Loop** — the watcher continues, ready for the next change cycle
 
 ## 🏗 Architecture
@@ -192,7 +192,7 @@ src/
 ├── config.rs      # Configuration defaults (debounce timeout)
 ├── debounce.rs    # Debounce timer logic
 ├── errors.rs      # Comprehensive error types (thiserror)
-├── git.rs         # Git operations via git2 (commit, push, versioning)
+├── git.rs         # Git operations via git2 (commit, push, versioning, add)
 ├── ignore.rs      # Gitignore filtering via git2
 ├── version.rs     # Semantic version parsing & PATCH incrementing
 └── watcher.rs     # Filesystem watcher via notify
@@ -203,7 +203,7 @@ src/
 | Decision | Rationale |
 |----------|-----------|
 | **Threads over async** | Simpler error handling, no futures runtime, natural blocking for channel operations |
-| **`git2` over shell** | Type-safe, faster, avoids parsing stdout, respects the spec |
+| **Hybrid approach** | `git2` for repo discovery / status / version history; CLI (`git add`, `git commit`, `git push`) for write operations so system credential helpers work out of the box |
 | **`semver` crate** | Correct semver parsing (handles pre-release, build metadata) |
 | **Channel-based IPC** | Clean separation between watcher, debounce, and main loop |
 | **No config file (yet)** | Future extensibility — the config module is ready for file-based overrides |

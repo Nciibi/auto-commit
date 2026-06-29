@@ -28,10 +28,6 @@ pub enum AutoCommitError {
     #[error("Push failed: {0}")]
     PushFailed(#[source] anyhow::Error),
 
-    /// No remote configured.
-    #[error("No remote configured for the current branch")]
-    NoRemote,
-
     /// Network error during push.
     #[error("Network error: {0}")]
     NetworkError(#[source] anyhow::Error),

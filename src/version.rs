@@ -17,8 +17,16 @@ use semver::Version;
 /// `v0.0.1`).
 pub fn parse_version(message: &str) -> Option<Version> {
     let trimmed = message.trim();
-    if let Some(rest) = trimmed.strip_prefix('v') {
-        Version::parse(rest).ok()
+    // Try with optional 'v' prefix (handle both "v3.1.1" and "3.1.1")
+    let rest = if let Some(r) = trimmed.strip_prefix('v') {
+        r
+    } else {
+        trimmed
+    };
+    // Take only the first line / first word to handle trailing content.
+    let version_str = rest.split_whitespace().next().unwrap_or(rest);
+    if let Ok(v) = Version::parse(version_str) {
+        Some(v)
     } else {
         None
     }
@@ -59,12 +67,19 @@ mod tests {
 
     #[test]
     fn parses_version_without_leading_v() {
-        assert!(parse_version("0.2.1").is_none());
+        let v = parse_version("0.2.1").expect("should parse without leading v");
+        assert_eq!(v.major, 0);
+        assert_eq!(v.minor, 2);
+        assert_eq!(v.patch, 1);
     }
 
     #[test]
     fn parses_version_with_trailing_text() {
-        assert!(parse_version("v0.2.1\n\nsome commit body").is_none());
+        let v = parse_version("v0.2.1\n\nsome commit body")
+            .expect("should parse from first line");
+        assert_eq!(v.major, 0);
+        assert_eq!(v.minor, 2);
+        assert_eq!(v.patch, 1);
     }
 
     #[test]

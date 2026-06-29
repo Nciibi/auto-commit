@@ -1,14 +1,13 @@
-//! Git operations via the `git2` library.
+//! Git operations.
 //!
-//! Provides the high-level operations AutoCommit needs:
-//! * Opening a repository
-//! * Reading the latest version from commit history
-//! * Staging all changes (`git add -A`)
-//! * Creating a commit
-//! * Pushing to the remote
+//! Provides the high-level operations AutoCommit needs.
+//!
+//! * Read operations (open, discover, version history) use the `git2` library
+//! * Write operations (add, commit, push) use the `git` CLI so that system
+//!   credential helpers (Windows GCM, osxkeychain, etc.) work out of the box
 
 use std::path::{Path, PathBuf};
-use git2::{BranchType, Cred, CredentialType, PushOptions, RemoteCallbacks, Repository, StatusOptions};
+use git2::{Repository, StatusOptions};
 use crate::errors::{AutoCommitError, Result};
 use crate::version;
 
@@ -94,23 +93,6 @@ impl GitRepo {
         Ok(None)
     }
 
-    /// Stage all changes (`git add -A` equivalent).
-    ///
-    /// Returns the number of files staged, or `0` if nothing changed.
-    pub fn stage_all(&self) -> Result<usize> {
-        let mut index = self.repo.index().map_err(|e| AutoCommitError::Other(e.into()))?;
-
-        // Add all files (including new, modified, deleted).
-        index.add_all(["*"].iter(), git2::IndexAddOption::DEFAULT | git2::IndexAddOption::FORCE, None)
-            .map_err(|e| AutoCommitError::Other(e.into()))?;
-
-        index.write().map_err(|e| AutoCommitError::Other(e.into()))?;
-
-        // Count staged entries.
-        let count = index.iter().count();
-        Ok(count)
-    }
-
     /// Check whether there are any unstaged or untracked changes.
     ///
     /// Returns `true` if the working tree is clean, `false` otherwise.
@@ -124,174 +106,80 @@ impl GitRepo {
         Ok(statuses.is_empty())
     }
 
-    /// Has any staged change?
-    pub fn has_staged_changes(&self) -> Result<bool> {
-        let mut opts = StatusOptions::new();
-        opts.include_untracked(true);
-        let statuses = self.repo
-            .statuses(Some(&mut opts))
+    /// Stage all, commit, and push in one shot using the git CLI.
+    ///
+    /// This avoids the git2 push/auth mess — the CLI handles credential
+    /// helpers (Windows GCM, etc.) natively.
+    pub fn add_commit_push(&self, message: &str) -> Result<String> {
+        use std::process::Command;
+
+        let root = &self.root;
+
+        // git add -A
+        let add_out = Command::new("git")
+            .args(["add", "-A"])
+            .current_dir(root)
+            .output()
             .map_err(|e| AutoCommitError::Other(e.into()))?;
-
-        for entry in statuses.iter() {
-            let status = entry.status();
-            if status != git2::Status::CURRENT && status != git2::Status::IGNORED {
-                return Ok(true);
-            }
-        }
-        Ok(false)
-    }
-
-    /// Create a commit with the given message.
-    ///
-    /// Stages everything first (`git add -A`), then creates the commit
-    /// on the current branch.
-    pub fn commit(&self, message: &str) -> Result<String> {
-        // Stage everything.
-        self.stage_all()?;
-
-        // If nothing is staged, bail out.
-        if !self.has_staged_changes()? {
-            return Err(AutoCommitError::CommitFailed(anyhow::anyhow!("no changes to commit")));
+        if !add_out.status.success() {
+            let stderr = String::from_utf8_lossy(&add_out.stderr);
+            return Err(AutoCommitError::Other(
+                anyhow::anyhow!("git add failed: {}", stderr),
+            ));
         }
 
-        // Get the signature.
-        let sig = self.repo.signature()
+        // Check if there's anything to commit (git diff --cached --quiet)
+        let has_changes = !Command::new("git")
+            .args(["diff", "--cached", "--quiet"])
+            .current_dir(root)
+            .status()
+            .map_err(|e| AutoCommitError::Other(e.into()))?
+            .success();
+        if !has_changes {
+            return Err(AutoCommitError::CommitFailed(
+                anyhow::anyhow!("no changes to commit"),
+            ));
+        }
+
+        // git commit -m "<message>"
+        let commit_out = Command::new("git")
+            .args(["commit", "-m", message])
+            .current_dir(root)
+            .output()
             .map_err(|e| AutoCommitError::Other(e.into()))?;
+        if !commit_out.status.success() {
+            let stderr = String::from_utf8_lossy(&commit_out.stderr);
+            return Err(AutoCommitError::CommitFailed(
+                anyhow::anyhow!("git commit failed: {}", stderr),
+            ));
+        }
 
-        // Get the HEAD commit (or create an initial commit).
-        let parent_commit = self.repo.head().ok().and_then(|head| {
-            head.peel_to_commit().ok()
-        });
+        // Extract the commit hash from output ("[branch <hash>] ...")
+        let oid = String::from_utf8_lossy(&commit_out.stdout)
+            .split_whitespace()
+            .find(|s| s.len() >= 7 && s.chars().all(|c| c.is_ascii_hexdigit()))
+            .unwrap_or("??")
+            .to_string();
 
-        let mut index = self.repo.index().map_err(|e| AutoCommitError::Other(e.into()))?;
-        let tree_id = index.write_tree().map_err(|e| AutoCommitError::Other(e.into()))?;
-        let tree = self.repo.find_tree(tree_id).map_err(|e| AutoCommitError::Other(e.into()))?;
-
-        let oid = if let Some(ref parent) = parent_commit {
-            self.repo
-                .commit(
-                    Some("HEAD"),
-                    &sig,
-                    &sig,
-                    message,
-                    &tree,
-                    &[parent],
-                )
-                .map_err(|e| AutoCommitError::CommitFailed(e.into()))?
-        } else {
-            // Initial commit (no parents).
-            self.repo
-                .commit(
-                    Some("HEAD"),
-                    &sig,
-                    &sig,
-                    message,
-                    &tree,
-                    &[],
-                )
-                .map_err(|e| AutoCommitError::CommitFailed(e.into()))?
-        };
-
-        Ok(oid.to_string())
-    }
-
-    /// Push committed changes to the remote.
-    ///
-    /// Pushes the current branch to its configured upstream, or the
-    /// default remote (typically "origin").
-    pub fn push(&self) -> Result<()> {
-        let branch = self.current_branch()?;
-        let remote_name = self.find_remote_name()?;
-
-        let mut remote = self.repo
-            .find_remote(&remote_name)
-            .map_err(|e| AutoCommitError::PushFailed(e.into()))?;
-
-        // Default fetchspec-based push refspec.
-        let refspec = format!("refs/heads/{}:refs/heads/{}", branch, branch);
-
-        let mut callbacks = RemoteCallbacks::new();
-        callbacks.credentials(credentials_cb);
-
-        callbacks.push_update_reference(|refname, status| {
-            if let Some(msg) = status {
-                Err(git2::Error::from_str(&format!("push rejected for {}: {}", refname, msg)))
-            } else {
-                Ok(())
+        // git push
+        let push_out = Command::new("git")
+            .args(["push"])
+            .current_dir(root)
+            .output()
+            .map_err(|e| AutoCommitError::Other(e.into()))?;
+        if !push_out.status.success() {
+            let stderr = String::from_utf8_lossy(&push_out.stderr);
+            if stderr.contains("rejected") {
+                return Err(AutoCommitError::PushFailed(
+                    anyhow::anyhow!("push rejected: {}", stderr),
+                ));
             }
-        });
-
-        let mut push_opts = PushOptions::new();
-        push_opts.remote_callbacks(callbacks);
-
-        remote.push(&[&refspec], Some(&mut push_opts))
-            .map_err(|e| {
-                let msg = e.message();
-                if msg.contains("Authentication") || msg.contains("Couldn't connect")
-                    || msg.contains("timeout")
-                {
-                    AutoCommitError::NetworkError(e.into())
-                } else if msg.contains("rejected") {
-                    AutoCommitError::PushFailed(e.into())
-                } else {
-                    AutoCommitError::Other(e.into())
-                }
-            })?;
-
-        Ok(())
-    }
-
-    /// Determine the remote name for the current branch.
-    ///
-    /// Prefers the tracking branch's remote; falls back to "origin".
-    fn find_remote_name(&self) -> Result<String> {
-        let branch = self.current_branch()?;
-
-        // Check if the branch has a tracking branch configured.
-        if let Ok(b) = self.repo.find_branch(&branch, BranchType::Local) {
-            if let Ok(upstream) = b.upstream() {
-                // Try to get the remote name from the tracking branch config
-                // "refs/remotes/origin/main" -> "origin"
-                if let Ok(Some(name)) = upstream.name() {
-                    if let Some(remote) = name.split('/').next() {
-                        return Ok(remote.to_string());
-                    }
-                }
-            }
+            return Err(AutoCommitError::NetworkError(
+                anyhow::anyhow!("push failed: {}", stderr),
+            ));
         }
 
-        // Fallback: try "origin".
-        if self.repo.find_remote("origin").is_ok() {
-            return Ok("origin".to_string());
-        }
+        Ok(oid)
+    }
 
-        // Last resort: find any remote at all.
-        let remotes = self.repo.remotes().map_err(|e| AutoCommitError::Other(e.into()))?;
-        let first = remotes.iter().flatten().next();
-        match first {
-            Some(name) => Ok(name.to_string()),
-            None => Err(AutoCommitError::NoRemote),
-        }
-    }
-}
-
-/// Default credential callback.
-///
-/// Tries SSH agent first, then falls back to a no-op (letting git2
-/// handle it through the system credential helpers via config).
-fn credentials_cb(
-    _url: &str,
-    username: Option<&str>,
-    allowed: CredentialType,
-) -> std::result::Result<Cred, git2::Error> {
-    if allowed.contains(CredentialType::SSH_KEY) {
-        return Cred::ssh_key_from_agent(username.unwrap_or("git"));
-    }
-    // For userpass (HTTPS), let git2 try the credential helpers.
-    if allowed.contains(CredentialType::USER_PASS_PLAINTEXT) {
-        // git2 doesn't have a direct "default credential helper" API in 0.19,
-        // so we return an error and the push will try alternative methods.
-        // Most modern systems configure credential helpers via git config.
-    }
-    Err(git2::Error::from_str("no suitable credentials available"))
 }

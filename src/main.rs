@@ -200,36 +200,25 @@ fn main() {
 
                 println!("{} {}", "Version:".cyan().bold(), version_str);
 
-                // Commit.
-                match repo.commit(&version_str) {
+                // Commit & push in one shot via CLI.
+                match repo.add_commit_push(&version_str) {
                     Ok(oid) => {
                         println!(
                             "{} {} ({})",
-                            "Committed:".green().bold(),
+                            "Committed & pushed:".green().bold(),
                             version_str,
                             &oid[..7.min(oid.len())]
                         );
                     }
-                    Err(e) => {
-                        eprintln!("{} {}", "[error]".red().bold(), e);
-                        continue;
-                    }
-                }
-
-                // Push.
-                print!("{} ", "Pushing...".cyan().bold());
-                match repo.push() {
-                    Ok(()) => {
-                        println!("{}", "Done.".green().bold());
-                    }
-                    Err(errors::AutoCommitError::NoRemote) => {
-                        println!("{}", "Skipped (no remote).".yellow());
-                    }
                     Err(errors::AutoCommitError::NetworkError(e)) => {
                         eprintln!("{} Push failed (network): {}", "[warn]".yellow().bold(), e);
                     }
-                    Err(e) => {
+                    Err(errors::AutoCommitError::PushFailed(e)) => {
                         eprintln!("{} {}", "[warn]".yellow().bold(), e);
+                    }
+                    Err(e) => {
+                        eprintln!("{} {}", "[error]".red().bold(), e);
+                        continue;
                     }
                 }
 
