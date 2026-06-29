@@ -8,7 +8,7 @@
 //! * Pushing to the remote
 
 use std::path::{Path, PathBuf};
-use git2::{Branch, BranchType, Cred, CredentialType, PushOptions, RemoteCallbacks, Repository, StatusOptions};
+use git2::{BranchType, Cred, CredentialType, PushOptions, RemoteCallbacks, Repository, StatusOptions};
 use crate::errors::{AutoCommitError, Result};
 use crate::version;
 

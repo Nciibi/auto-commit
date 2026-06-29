@@ -5,7 +5,6 @@
 //! produce the next version string.
 
 use semver::Version;
-use crate::errors::{AutoCommitError, Result};
 
 /// Attempt to extract a `semver::Version` from a commit-message string.
 ///
