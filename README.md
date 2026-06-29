@@ -61,8 +61,63 @@ cp target/release/autocommit ~/.cargo/bin/
 
 ### Prerequisites
 
-- [Rust](https://rustup.rs/) 1.70+ (stable)
-- A Git repository (local or cloned)
+- [Rust](https://rustup.rs/) 1.70+ (stable) — the installer will guide you through setup
+- A Git repository to work in (local or cloned)
+
+### Make `autocommit` available anywhere (add it to PATH)
+
+After building, the `autocommit.exe` file lives inside the project folder. To run it from any terminal, you need to copy it to a folder on your PATH.
+
+<details>
+<summary><b>🪟 Windows (click to expand)</b></summary>
+
+#### Option A — One command (easiest)
+
+Open **PowerShell** and run:
+
+```powershell
+Copy-Item target\release\autocommit.exe "$env:USERPROFILE\.cargo\bin\" -Force
+```
+
+Then type `autocommit` in any terminal to use it. If it says the command wasn't found, restart your terminal or log out and back in.
+
+#### Option B — Manual (if you prefer clicking)
+
+1. Open the project folder (`auto-commit`)
+2. Go into `target` → `release`
+3. Copy the file `autocommit.exe`
+4. Open a new File Explorer window and paste this in the address bar: `%USERPROFILE%\.cargo\bin`
+5. Press Enter — if the folder doesn't exist yet, create it
+6. Paste `autocommit.exe` into that folder
+
+> **Still not working?** Restart your terminal (or log out and back in) so Windows refreshes your PATH.
+
+</details>
+
+<details>
+<summary><b>🍎 macOS / 🐧 Linux (click to expand)</b></summary>
+
+Run this in your terminal:
+
+```bash
+cp target/release/autocommit ~/.cargo/bin/
+```
+
+Now type `autocommit` from anywhere. Restart your terminal if it's not found right away.
+
+</details>
+
+### Verify it worked
+
+Open a **new** terminal window and type:
+
+```bash
+autocommit --version
+```
+
+If you see `autocommit 0.1.0`, you're all set.
+
+---
 
 ## 🚀 Usage
 
