@@ -7,7 +7,7 @@ license = "MIT"
 
 [dependencies]
 # File system notifications
-notify = { version = "7", features = ["macos_fsevent"] }
+notify = "7"
 
 # Git ignore rule matching
 ignore = "0.4"
@@ -25,14 +25,14 @@ thiserror = "2"
 # CLI argument parsing
 clap = { version = "4", features = ["derive"] }
 
-# Async runtime
-tokio = { version = "1", features = ["full"] }
-
 # Terminal colors
 colored = "2"
 
 # Ctrl+C signal handling
 ctrlc = "3"
 
-# Cross-platform path handling
-pathdiff = "0.2"
+# Terminal detection (color support)
+atty = "0.2"
+
+[dev-dependencies]
+tempfile = "3"
