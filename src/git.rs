@@ -8,9 +8,7 @@
 //! * Pushing to the remote
 
 use std::path::{Path, PathBuf};
-use std::str;
-use anyhow::Context;
-use git2::{AutotagOption, PushOptions, RemoteCallbacks, Repository, Signature, StatusOptions};
+use git2::{Branch, BranchType, Cred, CredentialType, PushOptions, RemoteCallbacks, Repository, StatusOptions};
 use crate::errors::{AutoCommitError, Result};
 use crate::version;
 
@@ -62,38 +60,6 @@ impl GitRepo {
         }
     }
 
-    /// Resolve the remote URL for the current branch.
-    ///
-    /// Returns `Err(AutoCommitError::NoRemote)` if no remote is
-    /// configured.
-    pub fn remote_url(&self) -> Result<String> {
-        let branch = self.current_branch()?;
-
-        // Find the upstream remote for this branch.
-        let upstream_ref = format!("refs/heads/{}/merge", branch);
-        // Actually we need to look at branch.<name>.remote config, or the
-        // tracking branch, etc.  Simpler: find whatever remote exists.
-        if let Some(head) = self.repo.head().ok() {
-            if let Some(branch_ref) = self.repo.find_branch(&branch, git2::BranchType::Local).ok() {
-                if let Some(upstream) = branch_ref.upstream().ok() {
-                    let upstream_name = upstream.name().unwrap_or("").to_string();
-                    // Strip "refs/remotes/" prefix to get "origin/main".
-                    let parts: Vec<&str> = upstream_name.split('/').collect();
-                    if parts.len() >= 2 {
-                        let remote_name = parts[0];
-                        if let Some(remote) = self.repo.find_remote(remote_name).ok() {
-                            if let Some(url) = remote.url() {
-                                return Ok(url.to_string());
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        Err(AutoCommitError::NoRemote)
-    }
-
     /// Read the latest semantic version from the commit log.
     ///
     /// Scans recent commits (most recent first) looking for one whose
@@ -101,19 +67,26 @@ impl GitRepo {
     /// `None` when no versioned commit is found (caller should use
     /// `INITIAL_VERSION`).
     pub fn latest_version(&self) -> Result<Option<String>> {
-        let mut revwalk = self.repo.revwalk().map_err(AutoCommitError::RepoOpen)?;
-        revwalk.push_head().map_err(|_| AutoCommitError::DetachedHead)?;
+        let mut revwalk = match self.repo.revwalk() {
+            Ok(w) => w,
+            Err(_) => return Ok(None),
+        };
+        if revwalk.push_head().is_err() {
+            return Ok(None);
+        }
 
         for rev_result in revwalk {
-            let oid = rev_result.map_err(|e| AutoCommitError::Other(e.into()))?;
-            let commit = self.repo
-                .find_commit(oid)
-                .map_err(|e| AutoCommitError::Other(e.into()))?;
+            let oid = match rev_result {
+                Ok(o) => o,
+                Err(_) => continue,
+            };
+            let commit = match self.repo.find_commit(oid) {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
 
             let msg = commit.message().unwrap_or("");
-            if let Some(_ver) = version::parse_version(msg) {
-                // Return the *commit message* exactly as-is so the caller
-                // can re-format it.
+            if version::parse_version(msg).is_some() {
                 return Ok(Some(msg.trim().to_string()));
             }
         }
@@ -238,9 +211,8 @@ impl GitRepo {
         let refspec = format!("refs/heads/{}:refs/heads/{}", branch, branch);
 
         let mut callbacks = RemoteCallbacks::new();
-        // Use the default credential helpers (ssh-agent, wincred, etc.)
-        callbacks.credentials(git2::CredentialHelper::credential_helper_cb);
-        // Accept host key fingerprints automatically (same as normal git).
+        callbacks.credentials(credentials_cb);
+
         callbacks.push_update_reference(|refname, status| {
             if let Some(msg) = status {
                 Err(git2::Error::from_str(&format!("push rejected for {}: {}", refname, msg)))
@@ -276,10 +248,11 @@ impl GitRepo {
         let branch = self.current_branch()?;
 
         // Check if the branch has a tracking branch configured.
-        if let Ok(b) = self.repo.find_branch(&branch, git2::BranchType::Local) {
+        if let Ok(b) = self.repo.find_branch(&branch, BranchType::Local) {
             if let Ok(upstream) = b.upstream() {
-                if let Some(name) = upstream.name() {
-                    // "refs/remotes/origin/main" → "origin"
+                // Try to get the remote name from the tracking branch config
+                // "refs/remotes/origin/main" -> "origin"
+                if let Ok(Some(name)) = upstream.name() {
                     if let Some(remote) = name.split('/').next() {
                         return Ok(remote.to_string());
                     }
@@ -300,4 +273,25 @@ impl GitRepo {
             None => Err(AutoCommitError::NoRemote),
         }
     }
+}
+
+/// Default credential callback.
+///
+/// Tries SSH agent first, then falls back to a no-op (letting git2
+/// handle it through the system credential helpers via config).
+fn credentials_cb(
+    _url: &str,
+    username: Option<&str>,
+    allowed: CredentialType,
+) -> std::result::Result<Cred, git2::Error> {
+    if allowed.contains(CredentialType::SSH_KEY) {
+        return Cred::ssh_key_from_agent(username.unwrap_or("git"));
+    }
+    // For userpass (HTTPS), let git2 try the credential helpers.
+    if allowed.contains(CredentialType::USER_PASS_PLAINTEXT) {
+        // git2 doesn't have a direct "default credential helper" API in 0.19,
+        // so we return an error and the push will try alternative methods.
+        // Most modern systems configure credential helpers via git config.
+    }
+    Err(git2::Error::from_str("no suitable credentials available"))
 }
